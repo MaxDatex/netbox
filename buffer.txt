@@ -1,0 +1,73 @@
+SERVER_COMMAND_TEMPLATE = '''
+{% for trunk_port in trunks %}
+/interface vlan add interface={{ trunk_port }} name=vlan_{{ vid }}_{{ trunk_port }} vlan-id={{ vid }} disable=no comment=from_NB_{{ timestamp }}
+/interface bridge port add bridge=Br_{{ vid }} interface=vlan_{{ vid }}_{{ trunk_port }} comment=from_NB_{{ timestamp }}
+{% endfor %}
+
+'''
+
+
+server_ip = '192.168.1.112'
+
+
+jtemplate_server = jenv.from_string(SERVER_COMMAND_TEMPLATE)
+        srv_commands = jtemplate_server.render()
+
+
+
+        commands_applied = True
+
+        mt_username = 'admin+ct'
+        # ssh_key = paramiko.RSAKey.from_private_key_file("key.ppk")
+        mt_password = "admin"
+        timeout = 10
+
+        try:
+            ssh.connect(server_ip, username=mt_username, password=mt_password, timeout=timeout)
+            self.log_success('connected to server')
+
+        except socket.timeout:
+            print("Connection timeout. Log entry created.")
+            with open("error.log", "a") as f:
+                f.write(time_stamp() + " " + host + " Timeout connecting to the device.\n")
+            commands_applied = False
+
+        print("Succsessfully connected to the host.")
+
+        mt_command = srv_commands
+        self.log_info(mt_command)
+
+        self.log_info('trying...........')
+        for mt_command in commands.splitlines():
+            self.log_info('enter for loop')
+            stdin, stdout, stderr = ssh.exec_command(mt_command)
+            self.log_info(stdin, stdout, stderr)
+            time.sleep(2)
+        self.log_success('commands executed')
+        self.log_failure('Exception raised')
+        commands_applied = False
+
+        print(mt_command)
+
+        print("\nExternal commands are executed successfully.")
+#        ssh.get_transport().close()
+#        ssh.close()
+
+
+
+
+
+
+mik1 = {
+            "device_type": "mikrotik_routeros",
+            "ip": '10.10.10.102',
+            "username": "Guta",
+            "password": "m1kr0ftp",
+               }
+
+out = 'no such item'
+with ConnectHandler(**mik1) as net_connect:
+     net_connect.send_command(f'/interface bridge add name=Br_228')
+     while 'no such item' in net_connect.send_command('interface bridge get Br_228'):
+             print('!')
+             time.sleep(0.5)

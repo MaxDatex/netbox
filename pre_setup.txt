@@ -1,0 +1,36 @@
+commands = f'ip dhcp-client add interface=ether1 add-default-route=yes disabled=no \n' +\
+            f'/ppp profile add local-address=' + str(sipo) + ' name=SSTP-orion remote-address=172.16.2.1 comment=connect_to_IF_via_orion \n'+\
+            f'/ip service set telnet disabled=yes \n' +\
+            f'/ip service set ftp disabled=yes \n' +\
+            f'/ip service set www disabled=no \n' +\
+            f'/ip service set ssh disabled=no \n' +\
+            f'/ip service set api disabled=yes \n' +\
+            f'/ip service set winbox port=5 \n' +\
+            f'/ip service set winbox port=1 \n' +\
+            f'/ip service set api-ssl disabled=yes \n' +\
+            f'/ppp secret add name=SSTP-orion' + ' password=SSTP-orion service=sstp profile=SSTP local-address=' + str(sipo) + ' remote-address=172.16.2.1' + ' comment=connect_to_IF_via_orion \n' +\
+            f'/interface sstp-client add user=SSTP password=SSTP-orion connect-to=' + str(ipo) + ' profile=SSTP name=SSTP-orion' + ' comment=connect_to_IF_orion \n' +\
+            f'/ppp profile add local-address=' + str(sipd) + ' name=SSTP-dckz remote-address=172.16.6.1' + ' comment=connect_to_IF_via_DCKZ \n' +\
+            f'/ppp secret add name=SSTP-dckz password=SSTP-dckz service=sstp profile=SSTP-dckz local-address=' + str(sipd) + ' remote-address=172.16.6.1' + ' comment=connect_to_IF_via_DCKZ \n' +\
+            f'/system ntp client set primary-ntp=91.236.251.5 enabled=yes \n' +\
+            f'/system ntp client set servers=91.236.251.5 enabled=yes \n' +\
+            f'/interface sstp-client add user=SSTP-dckz password=SSTP-dckz connect-to=' + str(ipd) + ' profile=SSTP-dckz name=SSTP-dckz' +  ' comment=connect_to_IF_viz_DCKZ \n' +\
+            f'/interface bridge add name=Loopback \n' +\
+            f'/ip address add address=' + str(lb) + ' interface=Loopback \n' +\
+            f'/ip firewall address-list add address=' + str(allow1) + ' list=allow-ip \n' +\
+            f'/ip firewall address-list add address=' + str(allow2) + ' list=allow-ip \n' +\
+            f'/ip firewall filter add action=accept chain=input comment="Allow Address List" src-address-list=allow-ip \n' +\
+            f'/user add name=' + str(host) + ' group=full password=m1kr0tftp address=192.168.1.123 \n' +\
+            f'/user add name=ReadOnly group=read  password=' + str(psw) + ' address=' + str(allow) + ' \n' +\
+            f'/snmp community set 0 name=' + str(host) + ' addresses=' + str(libre) + ' \n' +\
+            f'/snmp set enabled=yes trap-community=' + str(host) + ' contact=user-mik location=Boston trap-target=' + str(libre) + ' \n' +\
+            f'/system identity set name=' + str(host) + ' \n' +\
+            f'/user disable admin \n' +\
+            f'/system logging action set name="remote" remote=' + str(libre) + ' remote-port=514 bsd-syslog=no numbers=3 \n' +\
+            f'/system logging add topics=critical action=remote \n' +\
+            f'/system logging add topics=warning action=remote \n' +\
+            f'/system logging add topics=info action=remote \n' +\
+            f'/system logging add topics=error action=remote \n' +\
+            f'/interface sstp-client enable SSTP-orion \n' +\
+            f'/interface sstp-client enable SSTP-dckz \n' +\
+            f'/quit'

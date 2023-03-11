@@ -2,10 +2,11 @@ import datetime
 import socket
 import time
 import traceback
+import hashlib
 
 import paramiko
 from dcim.models import Device, Interface
-from extras.scripts import Script, ObjectVar, MultiObjectVar
+from extras.scripts import Script, ObjectVar, MultiObjectVar, StringVar
 from ipam.models import VLAN
 from jinja2 import Environment, StrictUndefined
 from netmiko import ConnectHandler
@@ -40,6 +41,10 @@ class RunCommand(Script):
         description=' ТЕСТ ',
         label='Name Dev',
         required=True
+    )
+
+    srvpasswd = StringVar(
+        label='Пароль сервера'
     )
 
     iin = MultiObjectVar(
@@ -77,6 +82,12 @@ class RunCommand(Script):
         vlan_object = data.get('vlan_id')
         trunk_interfaces = data.get('iin')
         access_interfaces = data.get('iout')
+
+        srvpasswd = data["srvpasswd"]
+        passwd_hash = 'c7ad44cbad762a5da0a452f9e854fdc1e0e7a52a38015f23f3eab1d80b931dd472634dfac71cd34ebc35d16ab7fb8a90c81f975113d6c7538dc69dd8de9077ec'
+        if hashlib.sha512(srvpasswd.encode('UTF-8')).hexdigest() != passwd_hash:
+            self.log_failure('Невірний пароль сервера')
+            return passwd_hash
 
         # check that acc ports does not have intersection with trunk ports
         for acc_port in access_interfaces:
@@ -146,7 +157,7 @@ class RunCommand(Script):
             "device_type": "mikrotik_routeros",
             "ip": server_ip[:-3],
             "username": "admin+ct",
-            "password": "admin",
+            "password": srvpasswd,
                }
 
         try:
@@ -192,7 +203,6 @@ class RunCommand(Script):
 
         except Exception:
             commands_applied = False
-            self.log_failure(traceback.format_exc())
             return traceback.format_exc()
 
 #################################################################
@@ -208,16 +218,17 @@ class RunCommand(Script):
             bond = server.interfaces.get(name=f'bond_{host}')
             server_bridge, _ = server.interfaces.get_or_create(type='bridge', name=bridge_name)
             server_vlan, _ = VLAN.objects.get_or_create(name=f'vlan{vid}', vid=int(vid))
-            in_int = Interface.objects.create(
+            in_int, _ = Interface.objects.get_or_create(
                 name=f'vlan_{vid}_ether1',
-                type='virtual', mode='tagged',
+                type='virtual',
+                mode='tagged',
                 device=server,
                 bridge=server_bridge,
                 parent=ether1
             )
             in_int.tagged_vlans.add(server_vlan)
             in_int.save()
-            out_int = Interface.objects.create(
+            out_int, _ = Interface.objects.get_or_create(
                 name=f'vlan_{vid}_bond_{host}',
                 type='virtual',
                 mode='tagged',

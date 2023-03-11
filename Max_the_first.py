@@ -28,7 +28,7 @@ class RunCommand(Script):
         passwd_hash = 'c7ad44cbad762a5da0a452f9e854fdc1e0e7a52a38015f23f3eab1d80b931dd472634dfac71cd34ebc35d16ab7fb8a90c81f975113d6c7538dc69dd8de9077ec'
         if hashlib.sha512(srvpasswd.encode('UTF-8')).hexdigest() != passwd_hash:
             self.log_failure('Невірний пароль сервера')
-            return passwd_hash
+            return
 
         host = f'{data["device"].name}'
         device = Device.objects.get(name=host)
@@ -135,8 +135,8 @@ class RunCommand(Script):
             f'/ip service set winbox port=10' + str(device_id) + '\n' +\
             f'/ip service set api-ssl disabled=yes \n' +\
             f'/system identity set name=' + str(host) + ' \n' +\
-            f'/user disable admin \n' +\
             f'/user add name=' + str(host) + ' group=full password=m1kr0tftp address=192.168.1.0/24 \n' +\
+            f'/user disable admin \n' +\
             f'/user add name=ReadOnly group=read  password=' + str(psw) + ' address=' + str(allow) + ' \n'
 
         commands = defaults + firewall + sstp + eoip + snmp
@@ -146,8 +146,8 @@ class RunCommand(Script):
 ###################### Start MAX ####################################
 
         vlan47 = VLAN.objects.get_or_create(name='Vlan47', vid=47)[0]
+        loopback, _ = Interface.objects.get_or_create(name='Loopback', type='bridge', device=device)
         interfaces = Interface.objects.bulk_create([
-                Interface(name='Loopback', type='bridge', device=device),
                 Interface(name='SSTP-orion', type='virtual', device=device),
                 Interface(name='SSTP-dckz', type='virtual', device=device),
             ])
@@ -164,9 +164,9 @@ class RunCommand(Script):
 
         time.sleep(2)
         addresses = IPAddress.objects.bulk_create([
-                IPAddress(address=f'{lb}/{lmask}', assigned_object=interfaces[0]),
-                IPAddress(address=f'{sipo}/{omask}', assigned_object=interfaces[1]),
-                IPAddress(address=f'{sipd}/{dmask}', assigned_object=interfaces[2]),
+                IPAddress(address=f'{lb}/{lmask}', assigned_object=loopback),
+                IPAddress(address=f'{sipo}/{omask}', assigned_object=interfaces[0]),
+                IPAddress(address=f'{sipd}/{dmask}', assigned_object=interfaces[1]),
             ])
 
         device.primary_ip4 = addresses[0]

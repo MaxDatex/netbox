@@ -24,9 +24,12 @@ class Otkat(Script):
 
         orion_ip = '192.168.1.112/24'
         rmv_lb = data["rmv_lb"]
-        host = data["device"].name
-        device = Device.objects.get(name=host)
+        device = data["device"]
         ids = device.custom_field_data['IDs']
+        device.custom_field_data.update({'IDs': None})
+        device.save()
+
+        host = device.name
         client_interfaces = device.interfaces.filter(
             Q(name='Bond_main') |
             Q(name__istartswith='eoip-dckz') |
