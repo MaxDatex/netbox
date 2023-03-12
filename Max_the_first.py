@@ -31,16 +31,7 @@ class RunCommand(Script):
             return
 
         host = f'{data["device"].name}'
-        device = Device.objects.get(name=host)
-
-        cfdata = Device.objects.all().values_list('custom_field_data', flat=True)
-        ranges = list(range(100, 254))
-        for ids in cfdata:
-            if ids['IDs']:
-                ranges.remove(ids['IDs'])
-        device_id = ranges[0]
-        device.custom_field_data['IDs'] = device_id
-
+        device = data.get('device')
         sipo, omask = (f'172.16.2.{str(device_id)}', '24')
         sipd, dmask = (f'172.16.6.{str(device_id)}', '24')
         lb, lmask = (f'10.10.10.{str(device_id)}', '24')
@@ -57,6 +48,15 @@ class RunCommand(Script):
         bn = f'Bond_main'
         psw = f'{data["usrpasswd"]}'
         t1 = f'{t.strftime("%Y_%m_%d_%H_%M_%S")}'
+
+        cfdata = Device.objects.all().values_list('custom_field_data', flat=True)
+        ranges = list(range(100, 254))
+        for ids in cfdata:
+            if ids['IDs']:
+                ranges.remove(ids['IDs'])
+        device_id = ranges[0]
+        device.custom_field_data['IDs'] = device_id
+
 
 ##########################################################
 
@@ -109,7 +109,7 @@ class RunCommand(Script):
             f'/system logging add topics=critical action=remote \n' +\
             f'/system logging add topics=warning action=remote \n' +\
             f'/system logging add topics=info action=remote \n' +\
-            f'/system logging add topics=error action=remote \n'
+            f'/system logging add topics=error action=remote \n/'
 
 ############### EoIP + bond + Vlan ###################
         eoip = f'/interface eoip add name=EoIP_orion_' + str(id1) + ' local-address=' + str(sipo) + ' remote-address=172.16.2.1 tunnel-id=' + str(id1) + ' comment=connect_to_IF_via_orion_' + str(t1) + '\n' + \

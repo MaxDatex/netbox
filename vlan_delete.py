@@ -2,7 +2,6 @@ from dcim.models import Device, Interface
 from ipam.models import VLAN
 from extras.scripts import Script, ObjectVar, MultiObjectVar, MultiChoiceVar, BooleanVar, StringVar
 from django.db.models import Q
-from netmiko import ConnectHandler
 from jinja2 import StrictUndefined, Environment
 import paramiko
 import socket
@@ -85,23 +84,7 @@ class VlanDelete(Script):
             )
             return f'Vlan {vlan.name} doesn\'t exists on interfaces {[name for name in interfaces.values_list("name", flat=True)]}'
 
-        mik1 = {
-            "device_type": "mikrotik_routeros",
-            "ip": server_ip[:-3],
-            "username": "admin+ct",
-            "password": srvpasswd,
-        }
         commands_applied = True
-
-        # delete interfaces for server
-        if del_bridge:
-            try:
-                with ConnectHandler(**mik1) as net_connect:
-                    net_connect.send_command(f'/interface vlan remove vlan_{vid}_bond_{host}')
-                    net_connect.send_command(f'/interface vlan remove vlan_{vid}_ether1')
-            except Exception:
-                commands_applied = False
-                return traceback.format_exc()
 
         # delete interfaces for client
         mt_username = host.name
@@ -179,13 +162,8 @@ class VlanDelete(Script):
 
         if del_bridge:
             server = Device.objects.get(primary_ip4__address=server_ip)
-            # ether1 = server.interfaces.get(name='ether1')
-            # ether1.tagged_vlans.remove(vlan) ????????????????????????????????????????????
-            # ether1.save()
-            in_int = server.interfaces.get(name=f'vlan_{vid}_ether1')
-            in_int.delete()
             out_int = server.interfaces.get(name=f'vlan_{vid}_bond_{host}')
             out_int.delete()
-            self.log_info(f'Interfaces {in_int}, {out_int} were deleted')
+            self.log_info(f'Interface {out_int} deleted')
 
         return

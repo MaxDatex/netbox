@@ -77,7 +77,7 @@ class RunCommand(Script):
 
         host = f'{data["device"].name}'
         server_ip = '192.168.1.112/24'
-        host_ip = Device.objects.get(name=host).primary_ip.address.ip
+        host_ip = data["device"].primary_ip.address.ip
         vid = f'{data["vlan_id"].vid}'
         vlan_object = data.get('vlan_id')
         trunk_interfaces = data.get('iin')
@@ -134,7 +134,6 @@ class RunCommand(Script):
             ssh.connect(str(host_ip), username=mt_username, password=mt_password, timeout=timeout)
 
         except socket.timeout:
-            self.log_failure(traceback.format_exc())
             with open("error.log", "a") as f:
                 f.write(t1 + " " + host + " Timeout connecting to the device.\n")
             commands_applied = False
@@ -145,7 +144,6 @@ class RunCommand(Script):
                 stdin, stdout, stderr = ssh.exec_command(mt_command)
                 time.sleep(2)
         except Exception:
-            self.log_failure(traceback.format_exc())
             commands_applied = False
             return traceback.format_exc()
 
