@@ -178,6 +178,12 @@ class RunCommand(Script):
                 access_interfaces.update(bridge=bridge_interface, mode='access', untagged_vlan=vlan_object)
 
         self.log_debug(str(commands_applied))
+        html_template = """ <p>
+                            <a href="https://nb.rona.best/extras/scripts/vlan_create_by_device.RunCommand/">Налаштування VLAN</a>
+                           </p>
+                        """
+
+        self.log_info(html_template)
 
 #######################
 

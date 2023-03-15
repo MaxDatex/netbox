@@ -11,11 +11,11 @@ import hashlib
 
 
 COMMANDS_TEMPLATE = '''
-{% for interface in interfaces %}
-/interface vlan remove {{ interface }}
-{% endfor %}
 {% for number in numbers %}
 /interface bridge port remove number={{ number }}
+{% endfor %}
+{% for interface in interfaces %}
+/interface vlan remove {{ interface }}
 {% endfor %}
 '''
 
@@ -78,10 +78,8 @@ class VlanDelete(Script):
         host = data["device"]
         host_ip = host.primary_ip.address.ip
         vlan = data["vlan"]
-        bridge = data["bridge_interface"]
         interfaces = data["interfaces"]
         interface_names = interfaces.values_list('name', flat=True)
-        # del_bridge = data["del_bridge"]
         vid = vlan.vid
         srvpasswd = data["srvpasswd"]
         passwd_hash = 'c7ad44cbad762a5da0a452f9e854fdc1e0e7a52a38015f23f3eab1d80b931dd472634dfac71cd34ebc35d16ab7fb8a90c81f975113d6c7538dc69dd8de9077ec'
@@ -108,8 +106,8 @@ class VlanDelete(Script):
         commands_applied = True
 
         # delete interfaces for client
-        mt_username = 'admin' if str(host_ip) == '192.168.1.112' else host.name
-        mt_password = srvpasswd if str(host_ip) == '192.168.1.112' else "m1kr0tftp"
+        mt_username = 'admin' if str(host_ip) == server_ip[:-3] else host.name
+        mt_password = srvpasswd if str(host_ip) == server_ip[:-3] else "m1kr0tftp"
         timeout = 10
 
         ssh = paramiko.SSHClient()

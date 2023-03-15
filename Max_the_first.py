@@ -1,8 +1,14 @@
 from dcim.models import Device, Interface
 from extras.scripts import Script, ObjectVar, StringVar
-from ipam.models import IPAddress
+from ipam.models import IPAddress, VLAN
 import hashlib
 from netmiko import ConnectHandler
+import datetime
+import time
+
+
+t = datetime.datetime.now()
+t1 = f'{t.strftime("%Y-%m-%d_%H:%M:%S")}'
 
 
 class RunCommand(Script):
@@ -39,6 +45,17 @@ class RunCommand(Script):
 
         host = f'{data["device"].name}'
         device = data.get('device')
+
+        cfdata = Device.objects.all().values_list('custom_field_data', flat=True)
+        ranges = list(range(100, 254))
+        for ids in cfdata:
+            print(ids['IDs'])
+            if ids['IDs']:
+                print(True, ids["IDs"])
+                ranges.remove(ids['IDs'])
+        device_id = ranges[0]
+        device.custom_field_data['IDs'] = device_id
+
         sipo, omask = (f'172.16.2.{str(device_id)}', '24')
         sipd, dmask = (f'172.16.6.{str(device_id)}', '24')
         lb, lmask = (f'10.10.10.{str(device_id)}', '24')
@@ -53,17 +70,6 @@ class RunCommand(Script):
         bn = f'Bond_main'
         psw = f'{data["usrpasswd"]}'
         t1 = f'{t.strftime("%Y_%m_%d_%H_%M_%S")}'
-
-        cfdata = Device.objects.all().values_list('custom_field_data', flat=True)
-        ranges = list(range(100, 254))
-        for ids in cfdata:
-            print(ids['IDs'])
-            if ids['IDs']:
-                print(True, ids["IDs"])
-                ranges.remove(ids['IDs'])
-        device_id = ranges[0]
-        device.custom_field_data['IDs'] = device_id
-
 
 ##########################################################
 
@@ -177,6 +183,16 @@ class RunCommand(Script):
             ])
 
         device.primary_ip4 = addresses[0]
+        vlan_intf = Interface.objects.create(
+            name=f'vlan_47',
+            type='virtual',
+            mode='tagged',
+            device=device,
+            parent=bond_interface
+        )
+        vlan_intf.tagged_vlans.add(vlan47)
+        vlan_intf.bridge = loopback
+        vlan_intf.save()
         device.save()
 ####################### End MAX #####################################
 
@@ -188,7 +204,7 @@ class RunCommand(Script):
             '/interface bridge port add bridge=Loopback interface=vlan_47_bond_' + str(host)
         ]
 
-        srv_device = Device.objects.get(primary_ip4__address=ipo)
+        srv_device = Device.objects.get(primary_ip4__address=ipo+'/24')
         srv_eoip_interfaces = Interface.objects.bulk_create([
             Interface(name=f'EoIP-dckz_{host}', type='virtual', device=srv_device),
             Interface(name=f'EoIP-orion_{host}', type='virtual', device=srv_device)
@@ -198,6 +214,16 @@ class RunCommand(Script):
         srv_bond_interface.child_interfaces.add(*srv_eoip_interfaces)
         srv_bond_interface.label = f'{host}'
         srv_bond_interface.save()
+        srv_vlan_intf = Interface.objects.create(
+            name=f'vlan_47_{host}',
+            type='virtual',
+            mode='tagged',
+            device=srv_device,
+            parent=srv_bond_interface
+        )
+        srv_vlan_intf.tagged_vlans.add(vlan47)
+        srv_vlan_intf.bridge = srv_device.interfaces.get(name='Loopback')
+        srv_vlan_intf.save()
 
         mikro1 = {
             "device_type": "mikrotik_routeros",
@@ -213,17 +239,10 @@ class RunCommand(Script):
         self.log_info(f'ID пристою: {str(device_id)}')
 
         html_template = """ <p>
-                            <a href="https://nb.rona.best/extras/scripts/EoIP_mik.RunCommand/">Налаштування EoIP</a>
-                           </p>
-                        """
+                                    <a href="https://nb.rona.best/extras/scripts/vlan_create_by_device.RunCommand/">Налаштування VLAN</a>
+                                   </p>
+                                """
 
         self.log_info(html_template)
-
-        html_template2 = """ <p>
-                             <a href="https://nb.rona.best/extras/scripts/VLAN_mik.RunCommand/">Налаштування Vlan</a>
-                            </p>
-                         """
-
-        self.log_info(html_template2)
 
         return ''.join(output)

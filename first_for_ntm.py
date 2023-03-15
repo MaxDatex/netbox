@@ -1,5 +1,5 @@
 import traceback
-from dcim.models import Device, Interface
+from dcim.models import Device, Interface, Cable
 from extras.scripts import Script, ObjectVar, StringVar
 from ipam.models import IPAddress, VLAN
 import hashlib
@@ -73,9 +73,9 @@ class RunCommand(Script):
         allow1 = f'192.168.1.0/24'
         allow2 = f'10.10.10.0/24'
         libre = f'192.168.1.111'
-        bn = f'Bond_main'
         psw = f'{data["usrpasswd"]}'
         wan_s = f'{data["inter_s"]}'
+        ether1 = device.interfaces.get(name='ether1')
 
         firewall = f'/ip firewall address-list add address=' + str(allow1) + ' list=allow-ip \n' +\
             f'/ip firewall address-list add address=' + str(allow2) + ' list=allow-ip \n' +\
@@ -106,7 +106,7 @@ class RunCommand(Script):
             f'/system logging add topics=critical action=remote \n' +\
             f'/system logging add topics=warning action=remote \n' +\
             f'/system logging add topics=info action=remote \n' +\
-            f'/system logging add topics=error action=remote \n'
+            f'/system logging add topics=error action=remote \n/'
 
         defaults = f'/interface bridge add name=Loopback \n' +\
             f'/ip address add address={str(lb)}/{lmask} interface=Loopback \n' +\
@@ -124,11 +124,11 @@ class RunCommand(Script):
             f'/ip service set winbox port=10' + str(device_id) + '\n' +\
             f'/ip service set api-ssl disabled=yes \n' +\
             f'/system identity set name=' + str(host) + ' \n' +\
-            f'/user disable admin \n' +\
             f'/user add name=' + str(host) + ' group=full password=m1kr0tftp address=192.168.1.0/24 \n' +\
+            f'/user disable admin \n' +\
             f'/user add name=ReadOnly group=read  password=' + str(psw) + ' address=' + str(allow) + ' \n' +\
-            f'/interface vlan add name=vlan_47_{bn} vlan-id=47 interface=ether1 \n' +\
-            f'/interface bridge port add bridge=Loopback interface=vlan_47_{bn} \n'
+            f'/interface vlan add name=vlan_47_ether1 vlan-id=47 interface=ether1 \n' +\
+            f'/interface bridge port add bridge=Loopback interface=vlan_47_ether1 \n'
 
         commands = defaults + firewall + snmp
 
@@ -166,9 +166,8 @@ class RunCommand(Script):
 
         loopback, _ = Interface.objects.get_or_create(name='Loopback', type='bridge', device=device)
         lb_ip = IPAddress.objects.create(address=f'{lb}/{lmask}', assigned_object=loopback)
-        ether1 = device.interfaces.get(name='ether1')
         vlan_intf = Interface.objects.create(
-            name=f'vlan_47',
+            name=f'vlan_47_ether1',
             type='virtual',
             mode='tagged',
             device=device,
@@ -180,22 +179,17 @@ class RunCommand(Script):
         device.primary_ip4 = lb_ip
         device.save()
 
+        Cable.objects.create(a_terminations=[inter_s], b_terminations=[ether1])
+
         output = str(commands)
 
         self.log_info(f'ID пристою: {str(device_id)}')
 
         html_template = """ <p>
-                            <a href="https://nb.rona.best/extras/scripts/EoIP_mik.RunCommand/">Налаштування EoIP</a>
+                            <a href="https://nb.rona.best/extras/scripts/vlan_create_by_device.RunCommand/">Налаштування VLAN</a>
                            </p>
                         """
 
         self.log_info(html_template)
-
-        html_template2 = """ <p>
-                             <a href="https://nb.rona.best/extras/scripts/VLAN_mik.RunCommand/">Налаштування Vlan</a>
-                            </p>
-                         """
-
-        self.log_info(html_template2)
 
         return ''.join(output)
