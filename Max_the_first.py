@@ -1,3 +1,10 @@
+from dcim.models import Device, Interface
+from extras.scripts import Script, ObjectVar, StringVar
+from ipam.models import IPAddress
+import hashlib
+from netmiko import ConnectHandler
+
+
 class RunCommand(Script):
     class Meta:
         name = " Начальні налаштування"
@@ -41,8 +48,6 @@ class RunCommand(Script):
         allow1 = f'192.168.1.0/24'
         allow2 = f'10.10.10.0/24'
         libre = f'192.168.1.111'
-        ioeoip = f'172.16.2.{str(device_id)}'
-        ideoip = f'172.16.6.{str(device_id)}'
         id1 = f'1' + str(device_id)
         id2 = f'2' + str(device_id)
         bn = f'Bond_main'
@@ -52,7 +57,9 @@ class RunCommand(Script):
         cfdata = Device.objects.all().values_list('custom_field_data', flat=True)
         ranges = list(range(100, 254))
         for ids in cfdata:
+            print(ids['IDs'])
             if ids['IDs']:
+                print(True, ids["IDs"])
                 ranges.remove(ids['IDs'])
         device_id = ranges[0]
         device.custom_field_data['IDs'] = device_id
@@ -189,6 +196,7 @@ class RunCommand(Script):
         srv_bond_interface = Interface.objects.create(name=f'bond_{host}', type='virtual', mode='tagged', device=srv_device)
         srv_bond_interface.tagged_vlans.add(vlan47)
         srv_bond_interface.child_interfaces.add(*srv_eoip_interfaces)
+        srv_bond_interface.label = f'{host}'
         srv_bond_interface.save()
 
         mikro1 = {

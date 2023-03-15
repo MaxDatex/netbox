@@ -11,14 +11,35 @@ import hashlib
 
 
 COMMANDS_TEMPLATE = '''
-{% if del_bridge %}
-/interface bridge remove Br_{{ vid }}
-{% endif %}
-/interface vlan remove vlan_{{ vid }}_Bond_main
+{% for interface in interfaces %}
+/interface vlan remove {{ interface }}
+{% endfor %}
 {% for number in numbers %}
 /interface bridge port remove number={{ number }}
 {% endfor %}
 '''
+
+# {% if del_bridge %}
+# /interface bridge remove Br_{{ vid }}
+# {% endif %}
+
+
+def _get_numbers(ssh, vid, interfaces):
+    commands_applied = True
+    tmp = 'filler'
+    numbers = list()
+    try:
+        stdin, stdout, stderr = ssh.exec_command(f'interface bridge port print where bridge=Br_{vid}')
+        time.sleep(2)
+        for line in stdout:
+            if f'Br_{vid}' in line and tmp[1].isnumeric() and any(
+                    [inter[:10] in line for inter in list(interfaces.values_list('name', flat=True))]):
+                numbers.append(tmp[1])
+            tmp = line
+    except Exception:
+        commands_applied = False
+        return commands_applied, traceback.format_exc()
+    return commands_applied, numbers
 
 
 class VlanDelete(Script):
@@ -50,7 +71,7 @@ class VlanDelete(Script):
 
     vlan = ObjectVar(model=VLAN)
 
-    del_bridge = BooleanVar(default=False)
+    # del_bridge = BooleanVar(default=False)
 
     def run(self, data, commit):
         server_ip = '192.168.1.112/24'
@@ -60,7 +81,7 @@ class VlanDelete(Script):
         bridge = data["bridge_interface"]
         interfaces = data["interfaces"]
         interface_names = interfaces.values_list('name', flat=True)
-        del_bridge = data["del_bridge"]
+        # del_bridge = data["del_bridge"]
         vid = vlan.vid
         srvpasswd = data["srvpasswd"]
         passwd_hash = 'c7ad44cbad762a5da0a452f9e854fdc1e0e7a52a38015f23f3eab1d80b931dd472634dfac71cd34ebc35d16ab7fb8a90c81f975113d6c7538dc69dd8de9077ec'
@@ -87,8 +108,8 @@ class VlanDelete(Script):
         commands_applied = True
 
         # delete interfaces for client
-        mt_username = host.name
-        mt_password = "m1kr0tftp"
+        mt_username = 'admin' if str(host_ip) == '192.168.1.112' else host.name
+        mt_password = srvpasswd if str(host_ip) == '192.168.1.112' else "m1kr0tftp"
         timeout = 10
 
         ssh = paramiko.SSHClient()
@@ -102,23 +123,27 @@ class VlanDelete(Script):
             return traceback.format_exc()
 
         # get numbers of interfaces in bridge
-        tmp = 'filler'
-        numbers = list()
-        try:
-            stdin, stdout, stderr = ssh.exec_command(f'interface bridge port print where bridge=Br_{vid}')
-            time.sleep(2)
-            for line in stdout:
-                if f'Br_{vid}' in line and tmp[1].isnumeric():
-                    numbers.append(tmp[1])
-                tmp = line
-        except Exception:
-            commands_applied = False
-            return traceback.format_exc()
+        # tmp = 'filler'
+        # numbers = list()
+        # try:
+        #     stdin, stdout, stderr = ssh.exec_command(f'interface bridge port print where bridge=Br_{vid}')
+        #     time.sleep(2)
+        #     for line in stdout:
+        #         if f'Br_{vid}' in line and tmp[1].isnumeric() and any([inter[:10] in line for inter in list(interfaces.values_list('name', flat=True))]):
+        #             numbers.append(tmp[1])
+        #         tmp = line
+        # except Exception:
+        #     commands_applied = False
+        #     return traceback.format_exc()
+
+        success, numbers = _get_numbers(ssh, vid, interfaces)
+        if not success:
+            return numbers
 
         data_to_render = {
-            'vid': vid,
+            # 'vid': vid,
             'interfaces': interfaces,
-            'del_bridge': del_bridge,
+            # 'del_bridge': del_bridge,
             'numbers': numbers
         }
 
@@ -155,15 +180,15 @@ class VlanDelete(Script):
                 if interface.tagged_vlans.all() and vlan in interface.tagged_vlans.all():
                     interface.tagged_vlans.remove(vlan)
                     interface.save()
-        if del_bridge:
-            bridge.delete()
-            self.log_info(f'Bridge interface {bridge.name} have been deleted')
+        # if del_bridge:
+        #     bridge.delete()
+        #     self.log_info(f'Bridge interface {bridge.name} have been deleted')
         self.log_info(f'Interfaces {", ".join(interface_names)} were deleted')
 
-        if del_bridge:
-            server = Device.objects.get(primary_ip4__address=server_ip)
-            out_int = server.interfaces.get(name=f'vlan_{vid}_bond_{host}')
-            out_int.delete()
-            self.log_info(f'Interface {out_int} deleted')
+        # if del_bridge:
+        #     server = Device.objects.get(primary_ip4__address=server_ip)
+        #     out_int = server.interfaces.get(name=f'vlan_{vid}_bond_{host}')
+        #     out_int.delete()
+        #     self.log_info(f'Interface {out_int} deleted')
 
         return

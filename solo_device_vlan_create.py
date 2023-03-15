@@ -9,7 +9,6 @@ from dcim.models import Device, Interface
 from extras.scripts import Script, ObjectVar, MultiObjectVar, StringVar
 from ipam.models import VLAN
 from jinja2 import Environment, StrictUndefined
-from netmiko import ConnectHandler
 from tenancy.models import *
 
 COMMANDS_TEMPLATE = '''/interface bridge add name=Br_{{ vid }} comment=from_NB_{{ timestamp }}
@@ -21,11 +20,6 @@ COMMANDS_TEMPLATE = '''/interface bridge add name=Br_{{ vid }} comment=from_NB_{
 /interface bridge port add bridge=Br_{{ vid }} interface={{ access_port }} comment=from_NB_{{ timestamp }}
 {% endfor %}
 '''
-
-ct1 = '''/interface print where name=Br_{{ vid }}'''
-ct2 = '''/interface bridge port print where bridge=Br_{{ vid }}'''
-ct3 = '''/interface bridge port print where bridge=Br_{{ vid }}'''
-
 
 t = datetime.datetime.now()
 t1 = f'{t.strftime("%Y-%m-%d_%H:%M:%S")}'
@@ -76,7 +70,6 @@ class RunCommand(Script):
     def run(self, data, commit):
 
         host = f'{data["device"].name}'
-        server_ip = '192.168.1.112/24'
         host_ip = data["device"].primary_ip.address.ip
         vid = f'{data["vlan_id"].vid}'
         vlan_object = data.get('vlan_id')
@@ -109,19 +102,8 @@ class RunCommand(Script):
 
 #########################################################
 
-        jenv1 = Environment(undefined=StrictUndefined, trim_blocks=True)
-        jtemplate1 = jenv1.from_string(ct1)
-
-        temp1 = jtemplate1.render(data_to_render)
-
-#############
-        jenv2 = Environment(undefined=StrictUndefined, trim_blocks=True)
-        jtemplate2 = jenv2.from_string(ct2)
-
-        temp2 = jtemplate2.render(data_to_render)
-
-        mt_username = host
-        mt_password = "m1kr0tftp"
+        mt_username = 'admin' if str(host_ip) == '192.168.1.112' else host
+        mt_password = srvpasswd if str(host_ip) == '192.168.1.112' else "m1kr0tftp"
         timeout = 10
 
         ssh = paramiko.SSHClient()
@@ -129,7 +111,6 @@ class RunCommand(Script):
 
         commands_applied = True
 
-        # Client
         try:
             ssh.connect(str(host_ip), username=mt_username, password=mt_password, timeout=timeout)
 
@@ -137,7 +118,9 @@ class RunCommand(Script):
             with open("error.log", "a") as f:
                 f.write(t1 + " " + host + " Timeout connecting to the device.\n")
             commands_applied = False
-            return traceback.format_exc()
+            return traceback.format_exc(), mt_username, mt_password
+        except paramiko.ssh_exception.AuthenticationException:
+            return f'Auth failed\n, {mt_username}, {mt_password}'
 
         try:
             for mt_command in commands.splitlines():
@@ -150,58 +133,19 @@ class RunCommand(Script):
         ssh.get_transport().close()
         ssh.close()
 
-        # Server
-        mik1 = {
-            "device_type": "mikrotik_routeros",
-            "ip": server_ip[:-3],
-            "username": "admin+ct",
-            "password": srvpasswd,
-               }
+        html_template = """ <p>
+                        <a href="https://nb.rona.best/extras/scripts/disable_Eoip_bond_mik.RunCommand/">у майбутньому </a>
+                            </p>
+                        """
 
-        try:
-            with ConnectHandler(**mik1) as net_connect:
-                self.log_success('Connected to server successfully')
+        self.log_info(html_template)
 
-                # Server
-                net_connect.send_command(f'/interface bridge add name=Br_{vid}')
-                time.sleep(2)
-                net_connect.send_command(f'/interface vlan add name=vlan_{vid}_ether1 interface=ether1 vlan-id={vid}')
-                time.sleep(2)
-                net_connect.send_command(f'/interface bridge port add bridge=Br_{vid} interface=vlan_{vid}_ether1')
-                time.sleep(2)
+        html_template2 = """ <p>
+                        <a href="https://nb.rona.best/extras/scripts/disable_Eoip_bond_mik.RunCommand/">у майбутньому </a>
+                             </p>
+                         """
 
-                # Налаштування відбуваться на мікроті клієнта, тому транковий інтерфейс завжди bond
-                net_connect.send_command(f'/interface vlan add interface=bond_{host} name=vlan_{ vid }_bond_{host} vlan-id={ vid } disable=no')
-                time.sleep(2)
-                net_connect.send_command(f'/interface bridge port add bridge=Br_{ vid } interface=vlan_{ vid }_bond_{ host }')
-                time.sleep(2)
-
-                for c1 in temp1.splitlines():
-                    net_connect.send_command(c1)
-                    time.sleep(2)
-                for c2 in temp2.splitlines():
-                    net_connect.send_command(c2)
-                    time.sleep(2)
-
-            net_connect.disconnect()
-
-            html_template = """ <p>
-                            <a href="https://nb.rona.best/extras/scripts/disable_Eoip_bond_mik.RunCommand/">у майбутньому </a>
-                                </p>
-                            """
-
-            self.log_info(html_template)
-
-            html_template2 = """ <p>
-                            <a href="https://nb.rona.best/extras/scripts/disable_Eoip_bond_mik.RunCommand/">у майбутньому </a>
-                                 </p>
-                             """
-
-            self.log_info(html_template2)
-
-        except Exception:
-            commands_applied = False
-            return traceback.format_exc(  )
+        self.log_info(html_template2)
 
 #################################################################
 
@@ -210,32 +154,6 @@ class RunCommand(Script):
 
             bridge_name = f'Br_{vid}'
             device = data.get('device')
-
-            server = Device.objects.get(primary_ip4__address=server_ip)
-            ether1 = server.interfaces.get(name='ether1')
-            bond = server.interfaces.get(name=f'bond_{host}')
-            server_bridge, _ = server.interfaces.get_or_create(type='bridge', name=bridge_name)
-            server_vlan, _ = VLAN.objects.get_or_create(name=f'vlan{vid}', vid=int(vid))
-            in_int, _ = Interface.objects.get_or_create(
-                name=f'vlan_{vid}_ether1',
-                type='virtual',
-                mode='tagged',
-                device=server,
-                bridge=server_bridge,
-                parent=ether1
-            )
-            in_int.tagged_vlans.add(server_vlan)
-            in_int.save()
-            out_int, _ = Interface.objects.get_or_create(
-                name=f'vlan_{vid}_bond_{host}',
-                type='virtual',
-                mode='tagged',
-                device=server,
-                bridge=server_bridge,
-                parent=bond
-            )
-            out_int.tagged_vlans.add(server_vlan)
-            out_int.save()
 
             # 1. create bridge interface
             bridge_interface, _ = device.interfaces.get_or_create(type='bridge', name=bridge_name)
