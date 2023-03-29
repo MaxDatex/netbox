@@ -1,20 +1,17 @@
-from pathlib import Path
-import datetime
-import socket
-import time
-import traceback
 import hashlib
 
-import paramiko
-from dcim.models import Device, Interface, DeviceRole
-from extras.scripts import Script, ObjectVar, MultiObjectVar, StringVar
+from dcim.models import Device, DeviceRole, Interface
+from django import forms
+from extras.scripts import MultiObjectVar, ObjectVar, Script, StringVar
 from ipam.models import VLAN
 from jinja2 import Environment, StrictUndefined
 from tenancy.models import *
-from django import forms
 from utilities.exceptions import AbortScript
+from utilities.helper import *
 
-COMMANDS_TEMPLATE = '''/interface bridge add name=Br_{{ vid }} comment=from_NB_{{ timestamp }}
+from helper import *
+
+COMMANDS_TEMPLATE = """/interface bridge add name=Br_{{ vid }} comment=from_NB_{{ timestamp }}
 {% for trunk_port in trunks %}
 /interface vlan add interface={{ trunk_port }} name=vlan_{{ vid }}_{{ trunk_port }} vlan-id={{ vid }} disable=no comment=from_NB_{{ timestamp }}
 /interface bridge port add bridge=Br_{{ vid }} interface=vlan_{{ vid }}_{{ trunk_port }} comment=from_NB_{{ timestamp }}
@@ -22,10 +19,8 @@ COMMANDS_TEMPLATE = '''/interface bridge add name=Br_{{ vid }} comment=from_NB_{
 {% for access_port in access %}
 /interface bridge port add bridge=Br_{{ vid }} interface={{ access_port }} comment=from_NB_{{ timestamp }}
 {% endfor %}
-'''
+"""
 
-t = datetime.datetime.now()
-t1 = f'{t.strftime("%Y-%m-%d_%H:%M:%S")}'
 router_role = DeviceRole.objects.get(name="Router")
 
 
@@ -36,70 +31,60 @@ class RunCommand(Script):
 
     device = ObjectVar(
         model=Device,
-        description=' ТЕСТ ',
-        label='Name Dev',
+        description=" ТЕСТ ",
+        label="Name Dev",
         required=True,
-        query_params={
-            "role_id": router_role.id
-        }
+        query_params={"role_id": router_role.id},
     )
 
-    srvpasswd = StringVar(
-        label='Пароль сервера',
-        widget=forms.PasswordInput()
-    )
+    srvpasswd = StringVar(label="Пароль сервера", widget=forms.PasswordInput())
 
     iin = MultiObjectVar(
         model=Interface,
-        label='trunk ports VLAN',
+        label="trunk ports VLAN",
         query_params={
-            'device_id': '$device',
-            'mode__n': 'access',
-        }
+            "device_id": "$device",
+            "mode__n": "access",
+        },
     )
 
     iout = MultiObjectVar(
         required=False,
         model=Interface,
-        label='Access ports VLAN',
+        label="Access ports VLAN",
         query_params={
-            'device_id': '$device',
-            'mode__n': 'access',
-            'interface_id__n': '$iin'
-        }
+            "device_id": "$device",
+            "mode__n": "access",
+            "interface_id__n": "$iin",
+        },
     )
 
-    vlan_id = ObjectVar(
-        model=VLAN,
-        label='VLAN (ID)',
-        required=True
-        )
+    vlan_id = ObjectVar(model=VLAN, label="VLAN (ID)", required=True)
 
     def run(self, data, commit):
+        srvpasswd = data["srvpasswd"]
+        if hashlib.sha512(srvpasswd.encode("UTF-8")).hexdigest() != passwd_hash:
+            raise AbortScript("Password is incorrect")
+
+        trunk_interfaces = data.get("iin")
+        access_interfaces = data.get("iout")
+        for acc_port in access_interfaces:
+            if acc_port in trunk_interfaces:
+                raise AbortScript(
+                    f"Access port {acc_port} have intersection with trunk ports"
+                )
 
         host = f'{data["device"].name}'
         host_ip = data["device"].primary_ip.address.ip
         vid = f'{data["vlan_id"].vid}'
-        vlan_object = data.get('vlan_id')
-        trunk_interfaces = data.get('iin')
-        access_interfaces = data.get('iout')
-        backup_name = host + "_" + t1 + '.backup'
-
-        srvpasswd = data["srvpasswd"]
-        passwd_hash = 'c7ad44cbad762a5da0a452f9e854fdc1e0e7a52a38015f23f3eab1d80b931dd472634dfac71cd34ebc35d16ab7fb8a90c81f975113d6c7538dc69dd8de9077ec'
-        if hashlib.sha512(srvpasswd.encode('UTF-8')).hexdigest() != passwd_hash:
-            raise AbortScript("Password is incorrect")
-
-        # check that acc ports does not have intersection with trunk ports
-        for acc_port in access_interfaces:
-            if acc_port in trunk_interfaces:
-                raise AbortScript(f'Access port {acc_port} have intersection with trunk ports')
+        vlan_object = data.get("vlan_id")
+        backup_name = get_backup_name(host)
 
         data_to_render = {
-            'vid': vid,
-            'trunks': [i.name for i in trunk_interfaces],
-            'access': [i.name for i in access_interfaces],
-            'timestamp': t1
+            "vid": vid,
+            "trunks": [i.name for i in trunk_interfaces],
+            "access": [i.name for i in access_interfaces],
+            "timestamp": get_timestamp(),
         }
 
         jenv = Environment(undefined=StrictUndefined, trim_blocks=True)
@@ -107,89 +92,44 @@ class RunCommand(Script):
 
         commands = jtemplate.render(data_to_render)
 
-#########################################################
+        ssh_connect(host, host_ip, srvpasswd, backup_name, commands.splitlines())
 
-        mt_username = 'admin' if str(host_ip) == '192.168.1.112' else host
-        mt_password = srvpasswd if str(host_ip) == '192.168.1.112' else "m1kr0tftp"
-        timeout = 10
-
-        ssh = paramiko.SSHClient()
-        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-
-        commands_applied = True
-
-        try:
-            ssh.connect(str(host_ip), username=mt_username, password=mt_password, timeout=timeout)
-
-        except socket.timeout:
-            raise AbortScript('Device not reachable! Check routers from/to NB')
-        except paramiko.ssh_exception.AuthenticationException:
-            raise AbortScript(f'Auth failed, {mt_username}, {mt_password}')
-
-        try:
-            stdin, stdout, stderr = ssh.exec_command(f'system backup save name={backup_name} dont-encrypt=yes')
-            time.sleep(2)
-            Path(f'/opt/netbox/netbox/{host}_backup').mkdir(parents=True, exist_ok=True)
-            sftp = ssh.open_sftp()
-            sftp.get(f'/{backup_name}', f'/opt/netbox/netbox/{host}_backup/{backup_name}')
-            sftp.close()
-        except Exception:
-            commands_applied = False
-            ssh.get_transport().close()
-            ssh.close()
-            return traceback.format_exc()
-
-        try:
-            for mt_command in commands.splitlines():
-                stdin, stdout, stderr = ssh.exec_command(mt_command)
-                time.sleep(2)
-        except Exception:
-            commands_applied = False
-            ssh.get_transport().close()
-            ssh.close()
-            return traceback.format_exc()
-
-        ssh.get_transport().close()
-        ssh.close()
-
-#################################################################
-
-        # create NetBox objects if commands applied
-        if commands_applied and commit:
-
-            bridge_name = f'Br_{vid}'
-            device = data.get('device')
+        if commit:
+            bridge_name = f"Br_{vid}"
+            device = data.get("device")
 
             # 1. create bridge interface
-            bridge_interface, _ = device.interfaces.get_or_create(type='bridge', name=bridge_name)
+            bridge_interface, _ = device.interfaces.get_or_create(
+                type="bridge", name=bridge_name
+            )
             # 2.1 for all trunk ports create virtual inteface like vlan_{vid}_{interface}
             if trunk_interfaces:
                 for trunk_port in trunk_interfaces:
-                    vint_name = f'vlan_{vid}_{trunk_port.name}'
+                    vint_name = f"vlan_{vid}_{trunk_port.name}"
                     # 2.2 set parent for virtual interface as trunk_port
-                    virtual_interface, _ = device.interfaces.get_or_create(type='virtual', name=vint_name, parent=trunk_port)
+                    virtual_interface, _ = device.interfaces.get_or_create(
+                        type="virtual", name=vint_name, parent=trunk_port
+                    )
                     # 2.3 set untagged vlan
                     virtual_interface.untagged_vlan = vlan_object
-                    virtual_interface.mode = 'access'
+                    virtual_interface.mode = "access"
                     # 2.4 set tagged vlan to trunk port
                     trunk_port.tagged_vlans.add(vlan_object)
-                    trunk_port.mode = 'tagged'
+                    trunk_port.mode = "tagged"
                     trunk_port.save()
                     # 3.1 add virtual interface to bridge
                     virtual_interface.bridge = bridge_interface
                     virtual_interface.save()
 
             if access_interfaces:
-                access_interfaces.update(bridge=bridge_interface, mode='access', untagged_vlan=vlan_object)
+                access_interfaces.update(
+                    bridge=bridge_interface, mode="access", untagged_vlan=vlan_object
+                )
 
-        self.log_debug(str(commands_applied))
-        html_template = """ <p>
-                            <a href="https://nb.rona.best/extras/scripts/vlan_create_by_device.RunCommand/">Налаштування VLAN</a>
-                           </p>
-                        """
+        html_template = """ 
+        <p><a href="https://nb.rona.best/extras/scripts/vlan_create_by_device.RunCommand/">Налаштування VLAN</a></p>
+        """
 
         self.log_info(html_template)
 
-#######################
-
-        return ''.join("Client:" + "\n" + commands + "\n\n\n" + "Check params:" + "\n")
+        return "".join("Client:" + "\n" + commands + "\n\n\n" + "Check params:" + "\n")

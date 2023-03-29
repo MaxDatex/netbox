@@ -1,15 +1,17 @@
-from dcim.models import Device, Interface, DeviceRole
-from ipam.models import VLAN
-from extras.scripts import Script, ObjectVar, MultiObjectVar, MultiChoiceVar, BooleanVar, StringVar
-from django.db.models import Q
-from jinja2 import StrictUndefined, Environment
-from utilities.exceptions import AbortScript
-from pathlib import Path
-import paramiko
+import datetime
+import hashlib
 import socket
 import time
-import hashlib
-import datetime
+from pathlib import Path
+
+import paramiko
+from dcim.models import Device, DeviceRole, Interface
+from django.db.models import Q
+from extras.scripts import (BooleanVar, MultiChoiceVar, MultiObjectVar,
+                            ObjectVar, Script, StringVar)
+from ipam.models import VLAN
+from jinja2 import Environment, StrictUndefined
+from utilities.exceptions import AbortScript
 
 COMMANDS_TEMPLATE = '''
 {% for number in numbers %}
