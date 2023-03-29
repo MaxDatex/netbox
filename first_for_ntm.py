@@ -8,13 +8,11 @@ from utilities.exceptions import AbortScript
 import time
 import socket
 from pathlib import Path
-import datetime
+# from helper import *
+from utilities.helper import *
 
 
 router_role = DeviceRole.objects.get(name="Router")
-device_s = Device.objects.get(primary_ip4__address='192.168.1.112/24')
-t = datetime.datetime.now()
-t1 = f'{t.strftime("%Y-%m-%d_%H:%M:%S")}'
 
 
 class RunCommand(Script):
@@ -35,19 +33,12 @@ class RunCommand(Script):
             "role_id": router_role.id
         }
     )
-    #
-    # device_s = ObjectVar(
-    #     model=Device,
-    #     description=' Server ',
-    #     label='Server',
-    #     required=True
-    # )
 
     inter_s = ObjectVar(
         model=Interface,
         label='WAN port for server',
         query_params={
-            'device_id': device_s.id,
+            'device_id': srv_device.id,
                      }
     )
 
@@ -63,34 +54,19 @@ class RunCommand(Script):
 
     def run(self, data, commit):
         srvpasswd = data["srvpasswd"]
-        passwd_hash = 'c7ad44cbad762a5da0a452f9e854fdc1e0e7a52a38015f23f3eab1d80b931dd472634dfac71cd34ebc35d16ab7fb8a90c81f975113d6c7538dc69dd8de9077ec'
         if hashlib.sha512(srvpasswd.encode('UTF-8')).hexdigest() != passwd_hash:
             raise AbortScript("Password is incorrect")
 
         host = f'{data["device"].name}'
-        device = Device.objects.get(name=host)
-        srv_lb = device_s.interfaces.get(name='Loopback')
+        device = data["device"]
         inter_s = data['inter_s']
-        cfdata = Device.objects.all().values_list('custom_field_data', flat=True)
-        ranges = list(range(100, 254))
-        for ids in cfdata:
-            if ids['IDs']:
-                ranges.remove(ids['IDs'])
-        device_id = ranges[0]
-        device.custom_field_data['IDs'] = device_id
-
-        lb, lmask = (f'10.10.10.{str(device_id)}', '24')
-        ip, lmask = (f'192.168.1.{str(device_id)}', '24')
-        ipo = f'192.168.1.112' #Server SSTP orion
-        allow = f'192.168.1.0/24,10.10.10.0/24'
-        allow1 = f'192.168.1.0/24'
-        allow2 = f'10.10.10.0/24'
-        libre = f'192.168.1.111'
         psw = f'{data["usrpasswd"]}'
         wan_s = f'{data["inter_s"]}'
+        device_id = get_device_custom_id()
+        device.custom_field_data['IDs'] = device_id
+        _, _, _, _, lb, lmask = get_ip_n_mask(device_id)
+        backup_name = get_backup_name(srv_device.name)
         ether1 = device.interfaces.get(name='ether1')
-        t1 = f'{t.strftime("%Y_%m_%d_%H_%M_%S")}'
-        backup_name = device_s.name + "_" + t1 + '.backup'
 
         firewall = f'/ip firewall address-list add address=' + str(allow1) + ' list=allow-ip \n' +\
             f'/ip firewall address-list add address=' + str(allow2) + ' list=allow-ip \n' +\
@@ -164,6 +140,12 @@ class RunCommand(Script):
             ssh.connect(str(ipo), username=mt_username, password=mt_password, timeout=timeout)
             stdin, stdout, stderr = ssh.exec_command(f'system backup save name={backup_name} dont-encrypt=yes')
             time.sleep(2)
+
+            Path(f'/opt/netbox/netbox/{srv_device.name}_backup').mkdir(parents=True, exist_ok=True)
+            sftp = ssh.open_sftp()
+            sftp.get(f'/{backup_name}', f'/opt/netbox/netbox/{srv_device.name}_backup/{backup_name}')
+            sftp.close()
+
             for mt_command in orions:
                 stdin, stdout, stderr = ssh.exec_command(mt_command)
                 time.sleep(2)
@@ -177,11 +159,6 @@ class RunCommand(Script):
         except Exception as e:
             raise AbortScript(e)
 
-        Path(f'/opt/netbox/netbox/{device_s.name}_backup').mkdir(parents=True, exist_ok=True)
-        sftp = ssh.open_sftp()
-        sftp.get(f'/{backup_name}', f'/opt/netbox/netbox/{device_s.name}_backup/{backup_name}')
-        sftp.close()
-
         ssh.get_transport().close()
         ssh.close()
 
@@ -189,7 +166,7 @@ class RunCommand(Script):
             name=f'vlan_47_{host}',
             type='virtual',
             mode='tagged',
-            device=device_s,
+            device=srv_device,
             parent=inter_s
         )
         vlan47 = VLAN.objects.get_or_create(name='Vlan47', vid=47)[0]

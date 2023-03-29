@@ -5,15 +5,13 @@ from ipam.models import IPAddress, VLAN
 import hashlib
 import paramiko
 import socket
-import datetime
 import time
 from django import forms
 from utilities.exceptions import AbortScript
+from utilities.helper import *
+from helper import *
 from jinja2 import Environment, StrictUndefined
 
-
-t = datetime.datetime.now()
-t1 = f'{t.strftime("%Y-%m-%d_%H:%M:%S")}'
 router_role = DeviceRole.objects.get(name="Router")
 
 orions = '''/interface eoip add name=EoIP-dckz_{{ id_dckz }} local-address=172.16.5.1 remote-address={{ sipd }} tunnel-id={{ id_dckz }} comment=connect_to_{{ host }}_via_DCKZ_{{ t1 }}
@@ -54,39 +52,21 @@ class RunCommand(Script):
 
     def run(self, data, commit):
         srvpasswd = data["srvpasswd"]
-        passwd_hash = 'c7ad44cbad762a5da0a452f9e854fdc1e0e7a52a38015f23f3eab1d80b931dd472634dfac71cd34ebc35d16ab7fb8a90c81f975113d6c7538dc69dd8de9077ec'
         if hashlib.sha512(srvpasswd.encode('UTF-8')).hexdigest() != passwd_hash:
             raise AbortScript("Password is incorrect")
 
         host = f'{data["device"].name}'
         device = data.get('device')
 
-        cfdata = Device.objects.all().values_list('custom_field_data', flat=True)
-        ranges = list(range(100, 254))
-        for ids in cfdata:
-            print(ids['IDs'])
-            if ids['IDs']:
-                print(True, ids["IDs"])
-                ranges.remove(ids['IDs'])
-        device_id = ranges[0]
+        device_id = get_device_custom_id()
         device.custom_field_data['IDs'] = device_id
 
-        sipo, omask = (f'172.16.2.{str(device_id)}', '24')
-        sipd, dmask = (f'172.16.6.{str(device_id)}', '24')
-        lb, lmask = (f'10.10.10.{str(device_id)}', '24')
-        ipo = f'192.168.1.112' #Server SSTP orion
-        ipd = f'192.168.1.117' #Server SSTP dckz
-        allow = f'192.168.1.0/24,10.10.10.0/24'
-        allow1 = f'192.168.1.0/24'
-        allow2 = f'10.10.10.0/24'
-        libre = f'192.168.1.111'
-        id1 = f'1' + str(device_id)
-        id2 = f'2' + str(device_id)
+        sipo, omask, sipd, dmask, lb, lmask = get_ip_n_mask(device.id)
+        id1, id2 = get_ids(device_id)
         bn = f'Bond_main'
         psw = f'{data["usrpasswd"]}'
-        t1 = f'{t.strftime("%Y_%m_%d_%H_%M_%S")}'
-        srv_device = Device.objects.get(primary_ip4__address=ipo + '/24')
-        backup_name = srv_device.name + "_" + t1 + '.backup'
+        t1 = get_timestamp()
+        backup_name = get_backup_name(srv_device.name)
 
         firewall = f'/ip firewall address-list add address=' + str(allow1) + ' list=allow-ip \n' +\
             f'/ip firewall address-list add address=' + str(allow2) + ' list=allow-ip \n' +\
@@ -185,6 +165,12 @@ class RunCommand(Script):
             ssh.connect(str(ipo), username=mt_username, password=mt_password, timeout=timeout)
             stdin, stdout, stderr = ssh.exec_command(f'system backup save name={backup_name} dont-encrypt=yes')
             time.sleep(2)
+
+            Path(f'/opt/netbox/netbox/{srv_device.name}_backup').mkdir(parents=True, exist_ok=True)
+            sftp = ssh.open_sftp()
+            sftp.get(f'/{backup_name}', f'/opt/netbox/netbox/{srv_device.name}_backup/{backup_name}')
+            sftp.close()
+
             for mt_command in commands.splitlines():
                 stdin, stdout, stderr = ssh.exec_command(mt_command)
                 time.sleep(2)
@@ -197,11 +183,6 @@ class RunCommand(Script):
             raise AbortScript('Failed to run commands')
         except Exception as e:
             raise AbortScript(e)
-
-        Path(f'/opt/netbox/netbox/{srv_device.name}_backup').mkdir(parents=True, exist_ok=True)
-        sftp = ssh.open_sftp()
-        sftp.get(f'/{backup_name}', f'/opt/netbox/netbox/{srv_device.name}_backup/{backup_name}')
-        sftp.close()
 
         ssh.get_transport().close()
         ssh.close()
