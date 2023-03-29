@@ -7,9 +7,9 @@ from utilities.exceptions import AbortScript
 from pathlib import Path
 import paramiko
 import socket
-import traceback
 import time
 import hashlib
+import datetime
 
 COMMANDS_TEMPLATE = '''
 {% for number in numbers %}
@@ -37,13 +37,14 @@ def _get_numbers(ssh, vid, interfaces):
                     [inter[:10] in line for inter in list(interfaces.values_list('name', flat=True))]):
                 numbers.append(tmp[1])
             tmp = line
-    except Exception:
-        commands_applied = False
-        return commands_applied, traceback.format_exc()
+    except Exception as e:
+        raise AbortScript(e)
     return commands_applied, numbers
 
 
 router_role = DeviceRole.objects.get(name="Router")
+t = datetime.datetime.now()
+t1 = f'{t.strftime("%Y-%m-%d_%H:%M:%S")}'
 
 
 class VlanDelete(Script):
@@ -97,47 +98,29 @@ class VlanDelete(Script):
         interface_names = interfaces.values_list('name', flat=True)
         vid = vlan.vid
         srvpasswd = data["srvpasswd"]
+        t1 = f'{t.strftime("%Y_%m_%d_%H_%M_%S")}'
+        backup_name = host + "_" + t1 + '.backup'
+
         passwd_hash = 'c7ad44cbad762a5da0a452f9e854fdc1e0e7a52a38015f23f3eab1d80b931dd472634dfac71cd34ebc35d16ab7fb8a90c81f975113d6c7538dc69dd8de9077ec'
         if hashlib.sha512(srvpasswd.encode('UTF-8')).hexdigest() != passwd_hash:
-            self.log_failure('Невірний пароль сервера')
-            return
+            raise AbortScript("Password is incorrect")
 
         if not Device.objects.get(id=host.id).interfaces.filter(
                 Q(tagged_vlans__name__contains=vlan.name) |
                 Q(untagged_vlan=vlan)
         ):
-            self.log_failure(f'Vlan {vlan.name} doesn\'t exists in {host.name}')
-            return f'Vlan {vlan.name} didn\'t exists in {host.name}'
+            raise AbortScript(f'Vlan {vlan.name} doesn\'t exists in {host.name}')
 
         if not Interface.objects.filter(id__in=interfaces).filter(
                 Q(tagged_vlans__name__contains=vlan.name) |
                 Q(untagged_vlan=vlan)
         ):
-            self.log_failure(
-                f'Vlan {vlan.name} doesn\'t exists on interfaces {[name for name in interfaces.values_list("name", flat=True)]}'
-            )
-            return f'Vlan {vlan.name} doesn\'t exists on interfaces {[name for name in interfaces.values_list("name", flat=True)]}'
-
-        commands_applied = True
-
-        # delete interfaces for client
-        mt_username = 'admin' if str(host_ip) == server_ip[:-3] else host.name
-        mt_password = srvpasswd if str(host_ip) == server_ip[:-3] else "m1kr0tftp"
-        timeout = 10
+            raise AbortScript(f'Vlan {vlan.name} doesn\'t exists on interfaces {[name for name in interfaces.values_list("name", flat=True)]}')
 
         ssh = paramiko.SSHClient()
         ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
-        try:
-            ssh.connect(str(host_ip), username=mt_username, password=mt_password, timeout=timeout)
-
-        except socket.timeout:
-            commands_applied = False
-            return traceback.format_exc()
-
-        success, numbers = _get_numbers(ssh, vid, interfaces)
-        if not success:
-            return numbers
+        numbers = _get_numbers(ssh, vid, interfaces)
 
         data_to_render = {
             # 'vid': vid,
@@ -151,21 +134,36 @@ class VlanDelete(Script):
 
         commands = jtemplate.render(data_to_render)
 
+        # delete interfaces for client
+        mt_username = 'admin' if str(host_ip) == server_ip[:-3] else host.name
+        mt_password = srvpasswd if str(host_ip) == server_ip[:-3] else "m1kr0tftp"
+        timeout = 10
+
         try:
+            ssh.connect(str(host_ip), username=mt_username, password=mt_password, timeout=timeout)
+            stdin, stdout, stderr = ssh.exec_command(f'system backup save name={backup_name} dont-encrypt=yes')
+            time.sleep(2)
+
+            Path(f'/opt/netbox/netbox/{host}_backup').mkdir(parents=True, exist_ok=True)
+            sftp = ssh.open_sftp()
+            sftp.get(f'/{backup_name}', f'/opt/netbox/netbox/{host}_backup/{backup_name}')
+            sftp.close()
+
             for mt_command in commands.splitlines():
                 stdin, stdout, stderr = ssh.exec_command(mt_command)
                 time.sleep(2)
-        except Exception:
-            commands_applied = False
-            ssh.get_transport().close()
-            ssh.close()
-            return traceback.format_exc()
+
+        except socket.timeout:
+            raise AbortScript('Device not reachable! Check routers from/to NB')
+        except paramiko.ssh_exception.AuthenticationException:
+            raise AbortScript(f'Auth failed, {mt_username}, {mt_password}')
+        except paramiko.SSHException:
+            raise AbortScript('Failed to run commands')
+        except Exception as e:
+            raise AbortScript(e)
 
         ssh.get_transport().close()
         ssh.close()
-
-        if not commands_applied:
-            return 'Commands not applied!'
 
         for interface in interfaces:
             if interface.type == 'virtual' and interface.name.startswith(f'vlan_{vid}'):

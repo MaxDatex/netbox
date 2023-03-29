@@ -129,16 +129,15 @@ class RunCommand(Script):
         try:
             stdin, stdout, stderr = ssh.exec_command(f'system backup save name={backup_name} dont-encrypt=yes')
             time.sleep(2)
+            Path(f'/opt/netbox/netbox/{host}_backup').mkdir(parents=True, exist_ok=True)
+            sftp = ssh.open_sftp()
+            sftp.get(f'/{backup_name}', f'/opt/netbox/netbox/{host}_backup/{backup_name}')
+            sftp.close()
         except Exception:
             commands_applied = False
             ssh.get_transport().close()
             ssh.close()
             return traceback.format_exc()
-
-        Path(f'/opt/netbox/netbox/{host}_backup').mkdir(parents=True, exist_ok=True)
-        sftp = ssh.open_sftp()
-        sftp.get(f'/{backup_name}', f'/opt/netbox/netbox/{host}_backup/{backup_name}')
-        sftp.close()
 
         try:
             for mt_command in commands.splitlines():
