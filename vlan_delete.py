@@ -1,14 +1,15 @@
-from dcim.models import Device, Interface
+from dcim.models import Device, Interface, DeviceRole
 from ipam.models import VLAN
 from extras.scripts import Script, ObjectVar, MultiObjectVar, MultiChoiceVar, BooleanVar, StringVar
 from django.db.models import Q
 from jinja2 import StrictUndefined, Environment
+from utilities.exceptions import AbortScript
+from pathlib import Path
 import paramiko
 import socket
 import traceback
 import time
 import hashlib
-
 
 COMMANDS_TEMPLATE = '''
 {% for number in numbers %}
@@ -42,11 +43,19 @@ def _get_numbers(ssh, vid, interfaces):
     return commands_applied, numbers
 
 
+router_role = DeviceRole.objects.get(name="Router")
+
+
 class VlanDelete(Script):
     class Meta:
         name = 'Vlan Delete'
 
-    device = ObjectVar(model=Device)
+    device = ObjectVar(
+        model=Device,
+        query_params={
+            "role_id": router_role.id
+        }
+    )
 
     srvpasswd = StringVar(
         label='Пароль сервера'
@@ -69,7 +78,13 @@ class VlanDelete(Script):
         }
     )
 
-    vlan = ObjectVar(model=VLAN)
+    # vids = set(device.interfaces.values_list('tagged_vlans__vid', flat=True)) & \
+    #        set(device.interfaces.values_list('untagged_vlan__vid', flat=True))
+    # vids.discard(None)
+
+    vlan = ObjectVar(
+        model=VLAN
+    )
 
     # del_bridge = BooleanVar(default=False)
 
@@ -119,20 +134,6 @@ class VlanDelete(Script):
         except socket.timeout:
             commands_applied = False
             return traceback.format_exc()
-
-        # get numbers of interfaces in bridge
-        # tmp = 'filler'
-        # numbers = list()
-        # try:
-        #     stdin, stdout, stderr = ssh.exec_command(f'interface bridge port print where bridge=Br_{vid}')
-        #     time.sleep(2)
-        #     for line in stdout:
-        #         if f'Br_{vid}' in line and tmp[1].isnumeric() and any([inter[:10] in line for inter in list(interfaces.values_list('name', flat=True))]):
-        #             numbers.append(tmp[1])
-        #         tmp = line
-        # except Exception:
-        #     commands_applied = False
-        #     return traceback.format_exc()
 
         success, numbers = _get_numbers(ssh, vid, interfaces)
         if not success:
