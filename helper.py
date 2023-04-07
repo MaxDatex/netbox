@@ -63,7 +63,7 @@ def ssh_connect(host, host_ip, srvpasswd, backup_name, commands):
 
     try:
         ssh.connect(
-            str(ipo), username=mt_username, password=mt_password, timeout=timeout
+            str(host_ip), username=mt_username, password=mt_password, timeout=timeout
         )
         stdin, stdout, stderr = ssh.exec_command(
             f"system backup save name={backup_name} dont-encrypt=yes"
