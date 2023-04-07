@@ -86,7 +86,7 @@ def ssh_connect(host, host_ip, srvpasswd, backup_name, commands):
     except paramiko.SSHException:
         raise AbortScript("Failed to run commands")
     except paramiko.ssh_exception.NoValidConnectionsError:
-        raise AbortScript("Unable to connect to port 22 on 10.10.10.100")
+        raise AbortScript(f"Unable to connect to {host_ip}")
     except Exception as e:
         raise AbortScript(e)
 
