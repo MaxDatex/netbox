@@ -4,7 +4,7 @@ import time
 from pathlib import Path
 
 import paramiko
-from dcim.models import Device, DeviceRole
+from dcim.models import Device, DeviceRole, Interface
 from utilities.exceptions import AbortScript
 
 ipo = f"192.168.1.112"  # Server SSTP orion
@@ -45,12 +45,22 @@ def get_device_custom_id():
     cfdata = Device.objects.all().values_list("custom_field_data", flat=True)
     ranges = list(range(100, 254))
     for ids in cfdata:
-        print(ids["IDs"])
         if ids["IDs"]:
-            print(True, ids["IDs"])
             ranges.remove(ids["IDs"])
     device_id = ranges[0]
     return device_id
+
+
+def get_custom_eoip_id(existing_id=False):
+    cfdata = Interface.objects.all().values_list("custom_field_data", flat=True)
+    ranges = list(range(40000, 100000))
+    for ids in cfdata:
+        if ids["EoIP_id"]:
+            ranges.remove(ids["EoIP_id"])
+    if existing_id:
+        ranges.remove(existing_id)
+    eoip_id = ranges[0]
+    return eoip_id
 
 
 def ssh_connect(host, host_ip, srvpasswd, backup_name, commands):
@@ -61,34 +71,34 @@ def ssh_connect(host, host_ip, srvpasswd, backup_name, commands):
     ssh = paramiko.SSHClient()
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
-    try:
-        ssh.connect(
-            str(host_ip), username=mt_username, password=mt_password, timeout=timeout
-        )
-        stdin, stdout, stderr = ssh.exec_command(
-            f"system backup save name={backup_name} dont-encrypt=yes"
-        )
+    ssh.connect(
+        str(host_ip), username=mt_username, password=mt_password, timeout=timeout
+    )
+    stdin, stdout, stderr = ssh.exec_command(
+        f"system backup save name={backup_name} dont-encrypt=yes"
+    )
+    time.sleep(2)
+
+    Path(f"/opt/netbox/netbox/{host}_backup").mkdir(parents=True, exist_ok=True)
+    sftp = ssh.open_sftp()
+    sftp.get(f"/{backup_name}", f"/opt/netbox/netbox/{host}_backup/{backup_name}")
+    sftp.close()
+
+    for mt_command in commands:
+        stdin, stdout, stderr = ssh.exec_command(mt_command)
         time.sleep(2)
-
-        Path(f"/opt/netbox/netbox/{host}_backup").mkdir(parents=True, exist_ok=True)
-        sftp = ssh.open_sftp()
-        sftp.get(f"/{backup_name}", f"/opt/netbox/netbox/{host}_backup/{backup_name}")
-        sftp.close()
-
-        for mt_command in commands:
-            stdin, stdout, stderr = ssh.exec_command(mt_command)
-            time.sleep(2)
-
-    except socket.timeout:
-        raise AbortScript("Device not reachable! Check routers from/to NB")
-    except paramiko.ssh_exception.AuthenticationException:
-        raise AbortScript(f"Auth failed, {mt_username}, {mt_password}")
-    except paramiko.SSHException:
-        raise AbortScript("Failed to run commands")
-    except paramiko.ssh_exception.NoValidConnectionsError:
-        raise AbortScript(f"Unable to connect to {host_ip}")
-    except Exception as e:
-        raise AbortScript(e)
 
     ssh.get_transport().close()
     ssh.close()
+
+    
+def netmiko_ssh_connect(host_ip, username, password, commands):
+     mikro1 = {
+            "device_type": "mikrotik_routeros",
+            "host": host_ip,
+            "username": username,
+            "password": password,
+        }
+
+        with ConnectHandler(**mikro1) as net_connect:
+            net_connect.send_config_set(commands, cmd_verify=True)
