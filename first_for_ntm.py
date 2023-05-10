@@ -1,9 +1,20 @@
-import traceback
-from dcim.models import Device, Interface, Cable
+from dcim.models import Device, Interface, Cable, DeviceRole
 from extras.scripts import Script, ObjectVar, StringVar
 from ipam.models import IPAddress, VLAN
 import hashlib
-from netmiko import ConnectHandler
+import paramiko
+from django import forms
+from utilities.exceptions import AbortScript
+import time
+import socket
+from pathlib import Path
+import datetime
+
+
+router_role = DeviceRole.objects.get(name="Router")
+device_s = Device.objects.get(primary_ip4__address='192.168.1.112/24')
+t = datetime.datetime.now()
+t1 = f'{t.strftime("%Y-%m-%d_%H:%M:%S")}'
 
 
 class RunCommand(Script):
@@ -20,20 +31,23 @@ class RunCommand(Script):
         model=Device,
         label='Пристрій',
         description='Пристрий який потрібно налаштувати',
+        query_params={
+            "role_id": router_role.id
+        }
     )
-
-    device_s = ObjectVar(
-        model=Device,
-        description=' Server ',
-        label='Server',
-        required=True
-    )
+    #
+    # device_s = ObjectVar(
+    #     model=Device,
+    #     description=' Server ',
+    #     label='Server',
+    #     required=True
+    # )
 
     inter_s = ObjectVar(
         model=Interface,
         label='WAN port for server',
         query_params={
-            'device_id': '$device_s',
+            'device_id': device_s.id,
                      }
     )
 
@@ -43,26 +57,26 @@ class RunCommand(Script):
     )
 
     srvpasswd = StringVar(
-        label='Пароль сервера'
+        label='Пароль сервера',
+        widget=forms.PasswordInput()
     )
 
     def run(self, data, commit):
         srvpasswd = data["srvpasswd"]
         passwd_hash = 'c7ad44cbad762a5da0a452f9e854fdc1e0e7a52a38015f23f3eab1d80b931dd472634dfac71cd34ebc35d16ab7fb8a90c81f975113d6c7538dc69dd8de9077ec'
         if hashlib.sha512(srvpasswd.encode('UTF-8')).hexdigest() != passwd_hash:
-            self.log_failure('Невірний пароль сервера')
-            return passwd_hash
+            raise AbortScript("Password is incorrect")
 
         host = f'{data["device"].name}'
         device = Device.objects.get(name=host)
-        device_s = data["device_s"]
         srv_lb = device_s.interfaces.get(name='Loopback')
         inter_s = data['inter_s']
+
         cfdata = Device.objects.all().values_list('custom_field_data', flat=True)
         ranges = list(range(100, 254))
         for ids in cfdata:
-            if ids['IDs']:
-                ranges.remove(ids['IDs'])
+            if ids.get('IDs'):
+                ranges.remove(ids.get('IDs'))
         device_id = ranges[0]
         device.custom_field_data['IDs'] = device_id
 
@@ -72,10 +86,12 @@ class RunCommand(Script):
         allow = f'192.168.1.0/24,10.10.10.0/24'
         allow1 = f'192.168.1.0/24'
         allow2 = f'10.10.10.0/24'
-        libre = f'192.168.1.111'
+        libre = f'192.168.1.23'
         psw = f'{data["usrpasswd"]}'
         wan_s = f'{data["inter_s"]}'
         ether1 = device.interfaces.get(name='ether1')
+        t1 = f'{t.strftime("%Y_%m_%d_%H_%M_%S")}'
+        backup_name = device_s.name + "_" + t1 + '.backup'
 
         firewall = f'/ip firewall address-list add address=' + str(allow1) + ' list=allow-ip \n' +\
             f'/ip firewall address-list add address=' + str(allow2) + ' list=allow-ip \n' +\
@@ -138,17 +154,37 @@ class RunCommand(Script):
            ' /interface bridge port add bridge=Loopback interface=vlan_47_' + str(host) + ' \n'
            ]
 
-        mikro1 = {
-            "device_type": "mikrotik_routeros",
-            "host": ipo,
-            "username": "admin+ct",
-            "password": srvpasswd,
-        }
+        mt_username = 'admin+ct'
+        mt_password = srvpasswd
+        timeout = 10
+
+        ssh = paramiko.SSHClient()
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
         try:
-            with ConnectHandler(**mikro1) as net_connect:
-                net_connect.send_config_set(orions, cmd_verify=True)
-        except Exception:
-            return traceback.format_exc()
+            ssh.connect(str(ipo), username=mt_username, password=mt_password, timeout=timeout)
+            stdin, stdout, stderr = ssh.exec_command(f'system backup save name={backup_name} dont-encrypt=yes')
+            time.sleep(2)
+            for mt_command in orions:
+                stdin, stdout, stderr = ssh.exec_command(mt_command)
+                time.sleep(2)
+
+        except socket.timeout:
+            raise AbortScript('Device not reachable! Check routers from/to NB')
+        except paramiko.ssh_exception.AuthenticationException:
+            raise AbortScript(f'Auth failed, {mt_username}, {mt_password}')
+        except paramiko.SSHException:
+            raise AbortScript('Failed to run commands')
+        except Exception as e:
+            raise AbortScript(e)
+
+        Path(f'/opt/netbox/netbox/{device_s.name}_backup').mkdir(parents=True, exist_ok=True)
+        sftp = ssh.open_sftp()
+        sftp.get(f'/{backup_name}', f'/opt/netbox/netbox/{device_s.name}_backup/{backup_name}')
+        sftp.close()
+
+        ssh.get_transport().close()
+        ssh.close()
 
         srv_vlan_intf = Interface.objects.create(
             name=f'vlan_47_{host}',

@@ -1,3 +1,4 @@
+from pathlib import Path
 import datetime
 import socket
 import time
@@ -5,11 +6,14 @@ import traceback
 import hashlib
 
 import paramiko
-from dcim.models import Device, Interface
+from dcim.models import Device, Interface, DeviceRole
 from extras.scripts import Script, ObjectVar, MultiObjectVar, StringVar
 from ipam.models import VLAN
 from jinja2 import Environment, StrictUndefined
 from tenancy.models import *
+from django import forms
+from utilities.exceptions import AbortScript
+
 
 COMMANDS_TEMPLATE = '''/interface bridge add name=Br_{{ vid }} comment=from_NB_{{ timestamp }}
 {% for trunk_port in trunks %}
@@ -23,6 +27,7 @@ COMMANDS_TEMPLATE = '''/interface bridge add name=Br_{{ vid }} comment=from_NB_{
 
 t = datetime.datetime.now()
 t1 = f'{t.strftime("%Y-%m-%d_%H:%M:%S")}'
+router_role = DeviceRole.objects.get(name="Router")
 
 
 class RunCommand(Script):
@@ -34,11 +39,15 @@ class RunCommand(Script):
         model=Device,
         description=' ТЕСТ ',
         label='Name Dev',
-        required=True
+        required=True,
+        query_params={
+            "role_id": router_role.id
+        }
     )
 
     srvpasswd = StringVar(
-        label='Пароль сервера'
+        label='Пароль сервера',
+        widget=forms.PasswordInput()
     )
 
     iin = MultiObjectVar(
@@ -75,18 +84,17 @@ class RunCommand(Script):
         vlan_object = data.get('vlan_id')
         trunk_interfaces = data.get('iin')
         access_interfaces = data.get('iout')
+        backup_name = host + "_" + t1 + '.backup'
 
         srvpasswd = data["srvpasswd"]
         passwd_hash = 'c7ad44cbad762a5da0a452f9e854fdc1e0e7a52a38015f23f3eab1d80b931dd472634dfac71cd34ebc35d16ab7fb8a90c81f975113d6c7538dc69dd8de9077ec'
         if hashlib.sha512(srvpasswd.encode('UTF-8')).hexdigest() != passwd_hash:
-            self.log_failure('Невірний пароль сервера')
-            return passwd_hash
+            raise AbortScript("Password is incorrect!")
 
         # check that acc ports does not have intersection with trunk ports
         for acc_port in access_interfaces:
             if acc_port in trunk_interfaces:
-                self.log_failure(f'Error: access port {acc_port} have intersection with trunk ports')
-                return
+                raise AbortScript(f'Access port {acc_port} have intersection with trunk ports')
 
         data_to_render = {
             'vid': vid,
@@ -115,12 +123,23 @@ class RunCommand(Script):
             ssh.connect(str(host_ip), username=mt_username, password=mt_password, timeout=timeout)
 
         except socket.timeout:
-            with open("error.log", "a") as f:
-                f.write(t1 + " " + host + " Timeout connecting to the device.\n")
-            commands_applied = False
-            return traceback.format_exc(), mt_username, mt_password
+            raise AbortScript('Device not reachable! Check routers from/to NB')
         except paramiko.ssh_exception.AuthenticationException:
-            return f'Auth failed\n, {mt_username}, {mt_password}'
+            raise AbortScript(f'Auth failed, {mt_username}, {mt_password}')
+
+        try:
+            stdin, stdout, stderr = ssh.exec_command(f'system backup save name={backup_name} dont-encrypt=yes')
+            time.sleep(2)
+        except Exception:
+            commands_applied = False
+            ssh.get_transport().close()
+            ssh.close()
+            return traceback.format_exc()
+
+        Path(f'/opt/netbox/netbox/{host}_backup').mkdir(parents=True, exist_ok=True)
+        sftp = ssh.open_sftp()
+        sftp.get(f'/{backup_name}', f'/opt/netbox/netbox/{host}_backup/{backup_name}')
+        sftp.close()
 
         try:
             for mt_command in commands.splitlines():
@@ -128,24 +147,12 @@ class RunCommand(Script):
                 time.sleep(2)
         except Exception:
             commands_applied = False
+            ssh.get_transport().close()
+            ssh.close()
             return traceback.format_exc()
 
         ssh.get_transport().close()
         ssh.close()
-
-        html_template = """ <p>
-                        <a href="https://nb.rona.best/extras/scripts/disable_Eoip_bond_mik.RunCommand/">у майбутньому </a>
-                            </p>
-                        """
-
-        self.log_info(html_template)
-
-        html_template2 = """ <p>
-                        <a href="https://nb.rona.best/extras/scripts/disable_Eoip_bond_mik.RunCommand/">у майбутньому </a>
-                             </p>
-                         """
-
-        self.log_info(html_template2)
 
 #################################################################
 

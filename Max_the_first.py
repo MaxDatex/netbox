@@ -1,14 +1,27 @@
-from dcim.models import Device, Interface
+from pathlib import Path
+from dcim.models import Device, Interface, DeviceRole
 from extras.scripts import Script, ObjectVar, StringVar
 from ipam.models import IPAddress, VLAN
 import hashlib
-from netmiko import ConnectHandler
+import paramiko
+import socket
 import datetime
 import time
+from django import forms
+from utilities.exceptions import AbortScript
+from jinja2 import Environment, StrictUndefined
 
 
 t = datetime.datetime.now()
 t1 = f'{t.strftime("%Y-%m-%d_%H:%M:%S")}'
+router_role = DeviceRole.objects.get(name="Router")
+
+orions = '''/interface eoip add name=EoIP-dckz_{{ id_dckz }} local-address=172.16.5.1 remote-address={{ sipd }} tunnel-id={{ id_dckz }} comment=connect_to_{{ host }}_via_DCKZ_{{ t1 }}
+/interface eoip add name=EoIP-orion_{{ id_orion }} local-address=172.16.5.1 remote-address={{ sipo }} tunnel-id={{ id_orion }} comment=connect_to_{{ host }}_via_ORION_{{ t1 }}
+/interface bonding add name=bond_{{ host }} slaves=EoIP-dckz_{{ id_dckz }},EoIP-orion_{{ id_orion }} mode=broadcast comment=connect_to_{{ host }}_{{ t1 }}
+/interface vlan add name=vlan_47_bond_{{ host }} interface=bond_{{ host }} vlan-id=47
+/interface bridge port add bridge=Loopback interface=vlan_47_bond_{{ host }}
+'''
 
 
 class RunCommand(Script):
@@ -24,7 +37,9 @@ class RunCommand(Script):
         model=Device,
         label='Пристрій',
         description='Пристрий який потрібно налаштувати',
-
+        query_params={
+            "role_id": router_role.id
+        }
     )
 
     usrpasswd = StringVar(
@@ -33,7 +48,8 @@ class RunCommand(Script):
     )
 
     srvpasswd = StringVar(
-        label='Пароль сервера'
+        label='Пароль сервера',
+        widget=forms.PasswordInput()
     )
 
     def run(self, data, commit):
@@ -49,10 +65,8 @@ class RunCommand(Script):
         cfdata = Device.objects.all().values_list('custom_field_data', flat=True)
         ranges = list(range(100, 254))
         for ids in cfdata:
-            print(ids['IDs'])
-            if ids['IDs']:
-                print(True, ids["IDs"])
-                ranges.remove(ids['IDs'])
+            if ids.get('IDs'):
+                ranges.remove(ids.get('IDs'))
         device_id = ranges[0]
         device.custom_field_data['IDs'] = device_id
 
@@ -64,27 +78,14 @@ class RunCommand(Script):
         allow = f'192.168.1.0/24,10.10.10.0/24'
         allow1 = f'192.168.1.0/24'
         allow2 = f'10.10.10.0/24'
-        libre = f'192.168.1.111'
+        libre = f'192.168.1.23'
         id1 = f'1' + str(device_id)
         id2 = f'2' + str(device_id)
         bn = f'Bond_main'
         psw = f'{data["usrpasswd"]}'
         t1 = f'{t.strftime("%Y_%m_%d_%H_%M_%S")}'
-
-##########################################################
-
-        # f'/routing ospf area add name=area2 instance=default area-id=0.0.0.2 \n' + \
-        # f'/routing ospf network add network={lb} area=area2 disabled=no \n' + \
-        # f'/routing ospf network add network=172.16.2.0/24 area=area2 disabled=no \n' + \
-        # f'/routing ospf network add network=172.16.6.0/24 area=area2 disabled=no \n' + \
-        # f'/routing ospf instance set default router-id={lb} \n' + \
-        # f'/redistribute-other-ospf=as-type-2 disabled=no \n' + \
-        # f'/routing ospf interface add interface=SSTP-dckz cost=6 disabled=no \n' + \
-        # f'/routing ospf interface add interface=SSTP-orion cost=4 disabled=no \n' + \
-        # f'/routing filter add chain=ospf-in prefix=!10.10.10.112 action=discard \n' + \
-        # f'/routing filter add chain=ospf-in prefix=!10.10.10.117 action=discard \n' + \
-
-##########################################################
+        srv_device = Device.objects.get(primary_ip4__address=ipo + '/24')
+        backup_name = srv_device.name + "_" + t1 + '.backup'
 
         firewall = f'/ip firewall address-list add address=' + str(allow1) + ' list=allow-ip \n' +\
             f'/ip firewall address-list add address=' + str(allow2) + ' list=allow-ip \n' +\
@@ -136,6 +137,7 @@ class RunCommand(Script):
             f'/interface bridge add name=Loopback \n' +\
             f'/ip address add address={str(lb)}/{lmask} interface=Loopback \n' +\
             f'/ip route add dst-address=172.16.5.0/24 gateway=172.16.6.1 comment=create_' + str(t1) + '\n' + \
+            f'/ip route add dst-address=192.168.1.23/32 gateway=10.10.10.112 comment=create_' + str(t1) + '\n' + \
             f'/system ntp client set primary-ntp=91.236.251.5 enabled=yes \n' +\
             f'/system ntp client set servers=91.236.251.5 enabled=yes \n' +\
             f'/ip neighbor discovery-settings set discover-interface-list=none \n' + \
@@ -152,9 +154,56 @@ class RunCommand(Script):
             f'/user disable admin \n' +\
             f'/user add name=ReadOnly group=read  password=' + str(psw) + ' address=' + str(allow) + ' \n'
 
-        commands = defaults + firewall + sstp + eoip + snmp
+        first_conf = defaults + firewall + sstp + eoip + snmp
 
 ##########################################################
+
+        jenv = Environment(undefined=StrictUndefined, trim_blocks=True)
+        jtemplate = jenv.from_string(orions)
+
+        data_to_render = {
+            "id_orion": id1,
+            "id_dckz": id2,
+            "host": host,
+            "t1": t1,
+            "sipd": sipd,
+            "sipo": sipo
+        }
+
+        commands = jtemplate.render(data_to_render)
+
+        mt_username = 'admin'
+        mt_password = srvpasswd
+        timeout = 10
+
+        ssh = paramiko.SSHClient()
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+
+        try:
+            ssh.connect(str(ipo), username=mt_username, password=mt_password, timeout=timeout)
+            stdin, stdout, stderr = ssh.exec_command(f'system backup save name={backup_name} dont-encrypt=yes')
+            time.sleep(2)
+            for mt_command in commands.splitlines():
+                stdin, stdout, stderr = ssh.exec_command(mt_command)
+                time.sleep(2)
+
+        except socket.timeout:
+            raise AbortScript('Device not reachable! Check routers from/to NB')
+        except paramiko.ssh_exception.AuthenticationException:
+            raise AbortScript(f'Auth failed, {mt_username}, {mt_password}')
+        except paramiko.SSHException:
+            raise AbortScript('Failed to run commands')
+        except Exception as e:
+            raise AbortScript(e)
+
+        Path(f'/opt/netbox/netbox/{srv_device.name}_backup').mkdir(parents=True, exist_ok=True)
+        sftp = ssh.open_sftp()
+        sftp.get(f'/{backup_name}', f'/opt/netbox/netbox/{srv_device.name}_backup/{backup_name}')
+        sftp.close()
+
+        ssh.get_transport().close()
+        ssh.close()
+
 
 ###################### Start MAX ####################################
 
@@ -196,15 +245,6 @@ class RunCommand(Script):
         device.save()
 ####################### End MAX #####################################
 
-        orions = [
-            '/interface eoip add name=EoIP-dckz_' + str(id2) + ' local-address=172.16.5.1 remote-address=' + str(sipd) + ' tunnel-id=' + str(id2) + ' comment=connect_to_' + str(host) + '_via_DCKZ_' + str(t1),
-            '/interface eoip add name=EoIP-orion_' + str(id1) + ' local-address=172.16.5.1 remote-address=' + str(sipo) + ' tunnel-id=' + str(id1) + ' comment=connect_to_' + str(host) + '_via_ORION_' + str(t1),
-            '/interface bonding add name=bond_' + str(host) + ' slaves=EoIP-dckz_' + str(id2) + ',' +'EoIP-orion_' + str(id1) + ' mode=broadcast comment=connect_to_' + str(host) + '_' + str(t1),
-            '/interface vlan add name=vlan_47_bond_' + str(host) + ' interface=bond_' + str(host) + ' vlan-id=47',
-            '/interface bridge port add bridge=Loopback interface=vlan_47_bond_' + str(host)
-        ]
-
-        srv_device = Device.objects.get(primary_ip4__address=ipo+'/24')
         srv_eoip_interfaces = Interface.objects.bulk_create([
             Interface(name=f'EoIP-dckz_{host}', type='virtual', device=srv_device),
             Interface(name=f'EoIP-orion_{host}', type='virtual', device=srv_device)
@@ -215,7 +255,7 @@ class RunCommand(Script):
         srv_bond_interface.label = f'{host}'
         srv_bond_interface.save()
         srv_vlan_intf = Interface.objects.create(
-            name=f'vlan_47_{host}',
+            name=f'vlan_47_{srv_bond_interface.name}',
             type='virtual',
             mode='tagged',
             device=srv_device,
@@ -224,17 +264,6 @@ class RunCommand(Script):
         srv_vlan_intf.tagged_vlans.add(vlan47)
         srv_vlan_intf.bridge = srv_device.interfaces.get(name='Loopback')
         srv_vlan_intf.save()
-
-        mikro1 = {
-            "device_type": "mikrotik_routeros",
-            "host": ipo,
-            "username": "admin+ct",
-            "password": srvpasswd,
-        }
-
-        with ConnectHandler(**mikro1) as net_connect:
-            net_connect.send_config_set(orions, cmd_verify=True)
-        output = str(commands)
 
         self.log_info(f'ID пристою: {str(device_id)}')
 
@@ -245,4 +274,4 @@ class RunCommand(Script):
 
         self.log_info(html_template)
 
-        return ''.join(output)
+        return first_conf

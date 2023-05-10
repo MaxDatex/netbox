@@ -1,4 +1,4 @@
-from dcim.models import Device, Interface
+from dcim.models import Device, Interface, DeviceRole
 from ipam.models import VLAN
 from extras.scripts import Script, ObjectVar, MultiObjectVar, MultiChoiceVar, BooleanVar, StringVar
 from django.db.models import Q
@@ -11,10 +11,8 @@ import hashlib
 
 
 COMMANDS_TEMPLATE = '''
-{% for number in numbers %}
-/interface bridge port remove number={{ number }}
-{% endfor %}
 {% for interface in interfaces %}
+/interface bridge port remove [/interface bridge port find interface~"{{ interface }}"]
 /interface vlan remove {{ interface }}
 {% endfor %}
 '''
@@ -24,29 +22,37 @@ COMMANDS_TEMPLATE = '''
 # {% endif %}
 
 
-def _get_numbers(ssh, vid, interfaces):
-    commands_applied = True
-    tmp = 'filler'
-    numbers = list()
-    try:
-        stdin, stdout, stderr = ssh.exec_command(f'interface bridge port print where bridge=Br_{vid}')
-        time.sleep(2)
-        for line in stdout:
-            if f'Br_{vid}' in line and tmp[1].isnumeric() and any(
-                    [inter[:10] in line for inter in list(interfaces.values_list('name', flat=True))]):
-                numbers.append(tmp[1])
-            tmp = line
-    except Exception:
-        commands_applied = False
-        return commands_applied, traceback.format_exc()
-    return commands_applied, numbers
+# def _get_numbers(ssh, vid, interfaces):
+#     commands_applied = True
+#     tmp = 'filler'
+#     numbers = list()
+#     try:
+#         stdin, stdout, stderr = ssh.exec_command(f'interface bridge port print where bridge=Br_{vid}')
+#         time.sleep(2)
+#         for line in stdout:
+#             if f'Br_{vid}' in line and tmp[1].isnumeric() and any(
+#                     [inter[:10] in line for inter in list(interfaces.values_list('name', flat=True))]):
+#                 numbers.append(tmp[1])
+#             tmp = line
+#     except Exception:
+#         commands_applied = False
+#         return commands_applied, traceback.format_exc()
+#     return commands_applied, numbers
+
+
+router_role = DeviceRole.objects.get(name="Router")
 
 
 class VlanDelete(Script):
     class Meta:
         name = 'Vlan Delete'
 
-    device = ObjectVar(model=Device)
+    device = ObjectVar(
+        model=Device,
+        query_params={
+            "role_id": router_role.id
+        }
+    )
 
     srvpasswd = StringVar(
         label='Пароль сервера'
@@ -120,29 +126,13 @@ class VlanDelete(Script):
             commands_applied = False
             return traceback.format_exc()
 
-        # get numbers of interfaces in bridge
-        # tmp = 'filler'
-        # numbers = list()
-        # try:
-        #     stdin, stdout, stderr = ssh.exec_command(f'interface bridge port print where bridge=Br_{vid}')
-        #     time.sleep(2)
-        #     for line in stdout:
-        #         if f'Br_{vid}' in line and tmp[1].isnumeric() and any([inter[:10] in line for inter in list(interfaces.values_list('name', flat=True))]):
-        #             numbers.append(tmp[1])
-        #         tmp = line
-        # except Exception:
-        #     commands_applied = False
-        #     return traceback.format_exc()
-
-        success, numbers = _get_numbers(ssh, vid, interfaces)
-        if not success:
-            return numbers
+        # success, numbers = _get_numbers(ssh, vid, interfaces)
+        # if not success:
+        #     return numbers
 
         data_to_render = {
-            # 'vid': vid,
             'interfaces': interfaces,
             # 'del_bridge': del_bridge,
-            'numbers': numbers
         }
 
         jenv = Environment(undefined=StrictUndefined, trim_blocks=True)
